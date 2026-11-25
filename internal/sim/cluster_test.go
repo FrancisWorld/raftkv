@@ -103,7 +103,7 @@ func TestSameSeedReplaysIdentically(t *testing.T) {
 		}
 		w.Stop()
 		c.Net.DropRate = 0
-		for i := 0; i < 600 && !(w.Idle() && c.Converged()); i++ {
+		for i := 0; i < 600 && (!w.Idle() || !c.Converged()); i++ {
 			c.Step()
 			w.Poll()
 		}

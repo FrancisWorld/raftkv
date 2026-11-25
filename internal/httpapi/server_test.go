@@ -40,7 +40,7 @@ func startCluster(t *testing.T) []*testNode {
 	peers := map[uint64]string{}
 	var ids []uint64
 	for i := 0; i < size; i++ {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -62,7 +62,7 @@ func startCluster(t *testing.T) []*testNode {
 		tr := httpapi.NewPeerTransport(others, nil)
 		store := kv.NewStore()
 		n, err := node.New(node.Config{
-			Raft:    raft.Config{ID: id, Peers: ids, ElectionTick: 10, HeartbeatTick: 1, PreVote: true, CheckQuorum: true, Seed: uint64(id)},
+			Raft:    raft.Config{ID: id, Peers: ids, ElectionTick: 10, HeartbeatTick: 1, PreVote: true, CheckQuorum: true, Seed: id},
 			Storage: raft.NewMemStorage(), SM: store, Transport: tr, SnapshotThreshold: 20,
 		})
 		if err != nil {
@@ -178,7 +178,11 @@ func TestFollowerRedirectsToLeaderWith307(t *testing.T) {
 		}
 	}
 	hc := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	resp, err := hc.Get(follower.url + "/v1/kv/some/key?x=1")
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, follower.url+"/v1/kv/some/key?x=1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := hc.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +197,7 @@ func TestFollowerRedirectsToLeaderWith307(t *testing.T) {
 
 func do(t *testing.T, method, url string, hdr map[string]string, body string) (int, string) {
 	t.Helper()
-	req, err := http.NewRequest(method, url, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(context.Background(), method, url, strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}

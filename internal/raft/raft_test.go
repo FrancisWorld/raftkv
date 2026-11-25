@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 )
@@ -181,7 +182,7 @@ func TestThreeNodeElectionAndReplication(t *testing.T) {
 	}
 	for _, id := range []uint64{1, 2, 3} {
 		if id != l.id {
-			if _, _, err := tn.nodes[id].Propose(nil); err != ErrNotLeader {
+			if _, _, err := tn.nodes[id].Propose(nil); !errors.Is(err, ErrNotLeader) {
 				t.Fatalf("follower propose err = %v", err)
 			}
 		}
@@ -313,7 +314,7 @@ func TestReadIndexRequiresQuorumConfirmation(t *testing.T) {
 	if len(tn.reads[l.id]) != 0 || l.role == Leader {
 		t.Fatalf("stale leader served a read (role=%v)", l.role)
 	}
-	if _, err := l.ReadIndex(); err != ErrNotLeader {
+	if _, err := l.ReadIndex(); !errors.Is(err, ErrNotLeader) {
 		t.Fatalf("ReadIndex on follower err = %v", err)
 	}
 }
@@ -347,7 +348,7 @@ func TestReadIndexNotReadyBeforeFirstCommit(t *testing.T) {
 			}
 		}
 	}
-	if _, err := l.ReadIndex(); err != ErrNotReady {
+	if _, err := l.ReadIndex(); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("ReadIndex before first commit err = %v, want ErrNotReady", err)
 	}
 }

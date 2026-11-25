@@ -1,0 +1,35 @@
+# Three-node raftkv cluster. Client API of node N is published on 808N.
+#   docker compose up --build -d
+#   raftctl --endpoints http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083 status
+x-node: &node
+  build: .
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/raftctl", "--endpoints", "http://127.0.0.1:8080", "--timeout", "3s", "status"]
+    interval: 5s
+    timeout: 4s
+    retries: 5
+
+x-peers: &peers --peers=1=http://node1:8080,2=http://node2:8080,3=http://node3:8080
+
+services:
+  node1:
+    <<: *node
+    command: ["--id=1", "--listen=:8080", "--data-dir=/data", *peers, "--tick=${RAFTKV_TICK:-100ms}", "--snapshot-threshold=${RAFTKV_SNAPSHOT_THRESHOLD:-10000}", "--log-level=${RAFTKV_LOG_LEVEL:-info}"]
+    ports: ["8081:8080"]
+    volumes: ["node1-data:/data"]
+  node2:
+    <<: *node
+    command: ["--id=2", "--listen=:8080", "--data-dir=/data", *peers, "--tick=${RAFTKV_TICK:-100ms}", "--snapshot-threshold=${RAFTKV_SNAPSHOT_THRESHOLD:-10000}", "--log-level=${RAFTKV_LOG_LEVEL:-info}"]
+    ports: ["8082:8080"]
+    volumes: ["node2-data:/data"]
+  node3:
+    <<: *node
+    command: ["--id=3", "--listen=:8080", "--data-dir=/data", *peers, "--tick=${RAFTKV_TICK:-100ms}", "--snapshot-threshold=${RAFTKV_SNAPSHOT_THRESHOLD:-10000}", "--log-level=${RAFTKV_LOG_LEVEL:-info}"]
+    ports: ["8083:8080"]
+    volumes: ["node3-data:/data"]
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:

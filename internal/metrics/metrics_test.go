@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -8,7 +9,7 @@ import (
 
 func scrape(r *Registry) string {
 	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, httptest.NewRequest("GET", "/metrics", nil))
+	r.ServeHTTP(rec, httptest.NewRequestWithContext(context.Background(), "GET", "/metrics", nil))
 	return rec.Body.String()
 }
 

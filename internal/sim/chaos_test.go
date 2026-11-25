@@ -88,7 +88,7 @@ func runChaos(t *testing.T, seed uint64, nodes, chaosTicks int, storage StorageF
 		}
 	}
 	w.Stop()
-	for i := 0; i < 3000 && !(w.Idle() && c.Converged()); i++ {
+	for i := 0; i < 3000 && (!w.Idle() || !c.Converged()); i++ {
 		c.Step()
 		w.Poll()
 	}

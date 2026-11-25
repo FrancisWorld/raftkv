@@ -34,7 +34,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	endpoints := fs.String("endpoints", "http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083", "comma-separated node URLs")
 	timeout := fs.Duration("timeout", 10*time.Second, "overall timeout for the command")
-	fs.Usage = func() { fmt.Fprint(stderr, usage) }
+	fs.Usage = func() { _, _ = fmt.Fprint(stderr, usage) }
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -46,7 +46,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	eps := strings.Split(*endpoints, ",")
 	c, err := client.New(eps)
 	if err != nil {
-		fmt.Fprintln(stderr, "raftctl:", err)
+		_, _ = fmt.Fprintln(stderr, "raftctl:", err)
 		return 2
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -54,7 +54,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	code, err := dispatch(ctx, c, eps, rest, stdout)
 	if err != nil {
-		fmt.Fprintln(stderr, "raftctl:", err)
+		_, _ = fmt.Fprintln(stderr, "raftctl:", err)
 	}
 	return code
 }
@@ -80,7 +80,7 @@ func dispatch(ctx context.Context, c *client.Client, eps, args []string, out io.
 		if !found {
 			return 1, fmt.Errorf("%s: not found", args[0])
 		}
-		fmt.Fprintln(out, v)
+		_, _ = fmt.Fprintln(out, v)
 	case "put":
 		return report(out)(c.Put(ctx, args[0], args[1]))
 	case "delete":
@@ -102,13 +102,13 @@ func report(out io.Writer) func(client.Result, error) (int, error) {
 			return 1, err
 		}
 		if !r.Applied {
-			fmt.Fprintf(out, "not applied (current value: %q)\n", r.Prev)
+			_, _ = fmt.Fprintf(out, "not applied (current value: %q)\n", r.Prev)
 			return 1, nil
 		}
 		if r.PrevFound {
-			fmt.Fprintf(out, "OK (previous value: %q)\n", r.Prev)
+			_, _ = fmt.Fprintf(out, "OK (previous value: %q)\n", r.Prev)
 		} else {
-			fmt.Fprintln(out, "OK")
+			_, _ = fmt.Fprintln(out, "OK")
 		}
 		return 0, nil
 	}
@@ -116,15 +116,15 @@ func report(out io.Writer) func(client.Result, error) (int, error) {
 
 func status(ctx context.Context, c *client.Client, eps []string, out io.Writer) (int, error) {
 	code := 0
-	fmt.Fprintf(out, "%-26s %-9s %5s %7s %7s %8s %9s %5s\n", "ENDPOINT", "ROLE", "TERM", "LEADER", "COMMIT", "APPLIED", "SNAPSHOT", "KEYS")
+	_, _ = fmt.Fprintf(out, "%-26s %-9s %5s %7s %7s %8s %9s %5s\n", "ENDPOINT", "ROLE", "TERM", "LEADER", "COMMIT", "APPLIED", "SNAPSHOT", "KEYS")
 	for _, ep := range eps {
 		st, err := c.Status(ctx, ep)
 		if err != nil {
-			fmt.Fprintf(out, "%-26s unreachable (%v)\n", ep, err)
+			_, _ = fmt.Fprintf(out, "%-26s unreachable (%v)\n", ep, err)
 			code = 1
 			continue
 		}
-		fmt.Fprintf(out, "%-26s %-9s %5d %7d %7d %8d %9d %5d\n", ep, st.Role, st.Term, st.Leader, st.CommitIndex, st.AppliedIndex, st.SnapshotIndex, st.Keys)
+		_, _ = fmt.Fprintf(out, "%-26s %-9s %5d %7d %7d %8d %9d %5d\n", ep, st.Role, st.Term, st.Leader, st.CommitIndex, st.AppliedIndex, st.SnapshotIndex, st.Keys)
 	}
 	return code, nil
 }

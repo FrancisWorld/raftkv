@@ -46,7 +46,7 @@ func (r *Registry) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
 }
 
 func header(w io.Writer, name, help, typ string) {
-	fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
+	_, _ = fmt.Fprintf(w, "# HELP %s %s\n# TYPE %s %s\n", name, help, name, typ)
 }
 
 var labelEscaper = strings.NewReplacer(`\`, `\\`, "\n", `\n`, `"`, `\"`)
@@ -113,7 +113,7 @@ func (v *CounterVec) write(w io.Writer) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		fmt.Fprintf(w, "%s%s %d\n", v.fname, renderLabels(v.labels, v.values[k]), v.children[k].v.Load())
+		_, _ = fmt.Fprintf(w, "%s%s %d\n", v.fname, renderLabels(v.labels, v.values[k]), v.children[k].v.Load())
 	}
 }
 
@@ -125,7 +125,7 @@ type funcMetric struct {
 func (f *funcMetric) name() string { return f.fname }
 func (f *funcMetric) write(w io.Writer) {
 	header(w, f.fname, f.help, f.typ)
-	fmt.Fprintf(w, "%s %g\n", f.fname, f.fn())
+	_, _ = fmt.Fprintf(w, "%s %g\n", f.fname, f.fn())
 }
 
 // NewGaugeFunc registers a gauge whose value is read at scrape time.
@@ -175,7 +175,7 @@ func (h *Histogram) write(w io.Writer) {
 	var cum uint64
 	for i, b := range h.bounds {
 		cum += h.counts[i]
-		fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", h.fname, b, cum)
+		_, _ = fmt.Fprintf(w, "%s_bucket{le=\"%g\"} %d\n", h.fname, b, cum)
 	}
-	fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n%s_sum %g\n%s_count %d\n", h.fname, h.total, h.fname, h.sum, h.fname, h.total)
+	_, _ = fmt.Fprintf(w, "%s_bucket{le=\"+Inf\"} %d\n%s_sum %g\n%s_count %d\n", h.fname, h.total, h.fname, h.sum, h.fname, h.total)
 }
