@@ -745,3 +745,6 @@ func (r *Raft) ackReads(from, ctx uint64) {
 	}
 	r.reads = r.reads[n:]
 }
+
+// Snapshot returns the newest local snapshot.
+func (r *Raft) Snapshot() Snapshot { return r.snapshot }

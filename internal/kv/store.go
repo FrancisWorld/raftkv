@@ -127,9 +127,9 @@ func (s *Store) Len() int {
 	return len(s.data)
 }
 
-// Apply executes an encoded Command and returns an encoded Result. It is
+// Apply executes an encoded Command (the log index is not needed) and returns an encoded Result. It is
 // deterministic: every replica applying the same log produces the same state.
-func (s *Store) Apply(data []byte) []byte {
+func (s *Store) Apply(_ uint64, data []byte) []byte {
 	var cmd Command
 	if err := json.Unmarshal(data, &cmd); err != nil || cmd.Validate() != nil {
 		return encodeResult(Result{Error: "malformed"})

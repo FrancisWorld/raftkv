@@ -4,7 +4,7 @@ import "testing"
 
 func apply(t *testing.T, s *Store, c Command) Result {
 	t.Helper()
-	r, err := DecodeResult(s.Apply(c.Encode()))
+	r, err := DecodeResult(s.Apply(0, c.Encode()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestClientIDZeroDisablesDedupe(t *testing.T) {
 func TestMalformedCommandIsRejectedDeterministically(t *testing.T) {
 	s := NewStore()
 	for _, raw := range [][]byte{[]byte("not json"), []byte(`{"op":"nope","key":"k"}`), []byte(`{"op":"put","key":""}`)} {
-		r, _ := DecodeResult(s.Apply(raw))
+		r, _ := DecodeResult(s.Apply(0, raw))
 		if r.Error != "malformed" {
 			t.Fatalf("%q -> %+v", raw, r)
 		}
