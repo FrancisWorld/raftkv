@@ -1,0 +1,19 @@
+# binaries and build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.txt
+
+# local data and secrets
+/data/
+*.wal
+.env
+.env.*
+!.env.example
+
+# editor / OS
+.idea/
+.vscode/
+.DS_Store
