@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParsePeers(t *testing.T) {
 	got, err := parsePeers("1=http://a:8080, 2=http://b:8080/,3=https://c")
@@ -33,5 +36,24 @@ func TestParseFlags(t *testing.T) {
 func TestRunRejectsUnknownSelf(t *testing.T) {
 	if err := run([]string{"--id", "9", "--peers", "1=http://a,2=http://b"}); err == nil {
 		t.Fatal("expected an error when --id is not in --peers")
+	}
+}
+
+func TestPeerAuthenticatorRefusesToStartWithoutKey(t *testing.T) {
+	t.Setenv(keyEnv, "")
+	log, _ := newLogger("error")
+	if _, err := peerAuthenticator(options{}, log); err == nil {
+		t.Fatal("a node must refuse to start without a cluster key")
+	}
+	if a, err := peerAuthenticator(options{insecurePeer: true}, log); err != nil || a != nil {
+		t.Fatalf("--insecure-peer: auth=%v err=%v", a, err)
+	}
+	t.Setenv(keyEnv, strings.Repeat("k", 40))
+	if a, err := peerAuthenticator(options{}, log); err != nil || a == nil {
+		t.Fatalf("env key: auth=%v err=%v", a, err)
+	}
+	t.Setenv(keyEnv, "too-short")
+	if _, err := peerAuthenticator(options{}, log); err == nil {
+		t.Fatal("short key accepted")
 	}
 }

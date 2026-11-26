@@ -1,8 +1,13 @@
+# Peer traffic is authenticated with a shared key that
+# is NOT stored anywhere: start with scripts/compose-up.sh, which generates a
+# throwaway key per run (or export RAFTKV_CLUSTER_KEY yourself, 32+ characters).
 # Three-node raftkv cluster. Client API of node N is published on 808N.
-#   docker compose up --build -d
+#   scripts/compose-up.sh
 #   raftctl --endpoints http://127.0.0.1:8081,http://127.0.0.1:8082,http://127.0.0.1:8083 status
 x-node: &node
   build: .
+  environment:
+    RAFTKV_CLUSTER_KEY: ${RAFTKV_CLUSTER_KEY:?run scripts/compose-up.sh or export RAFTKV_CLUSTER_KEY (32+ characters)}
   restart: unless-stopped
   healthcheck:
     test: ["CMD", "/usr/local/bin/raftctl", "--endpoints", "http://127.0.0.1:8080", "--timeout", "3s", "status"]

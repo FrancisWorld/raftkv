@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,6 +24,7 @@ commands:
   delete <key>                   remove a key
   cas <key> <expected> <value>   set a key only if it currently equals <expected>
   create <key> <value>           set a key only if it does not exist
+  keygen                         print a fresh random cluster key (64 hex characters)
   status                         show every endpoint's role, term and indexes
 `
 
@@ -63,7 +66,7 @@ var errUsage = errors.New("wrong number of arguments; run raftctl with no argume
 
 func dispatch(ctx context.Context, c *client.Client, eps, args []string, out io.Writer) (int, error) {
 	cmd, args := args[0], args[1:]
-	need := map[string]int{"get": 1, "put": 2, "delete": 1, "cas": 3, "create": 2, "status": 0}
+	need := map[string]int{"get": 1, "put": 2, "delete": 1, "cas": 3, "create": 2, "status": 0, "keygen": 0}
 	n, ok := need[cmd]
 	if !ok {
 		return 2, fmt.Errorf("unknown command %q", cmd)
@@ -91,6 +94,12 @@ func dispatch(ctx context.Context, c *client.Client, eps, args []string, out io.
 		return report(out)(c.CreateIfAbsent(ctx, args[0], args[1]))
 	case "status":
 		return status(ctx, c, eps, out)
+	case "keygen":
+		key := make([]byte, 32)
+		if _, err := rand.Read(key); err != nil {
+			return 1, err
+		}
+		_, _ = fmt.Fprintln(out, hex.EncodeToString(key))
 	}
 	return 0, nil
 }

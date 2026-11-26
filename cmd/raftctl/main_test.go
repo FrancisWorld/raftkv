@@ -52,6 +52,7 @@ func TestCommands(t *testing.T) {
 		{[]string{"put", "k", "v"}, 0, `OK (previous value: "old")`, ""},
 		{[]string{"cas", "k", "a", "b"}, 1, `not applied (current value: "actual")`, ""},
 		{[]string{"status"}, 0, "leader", ""},
+		{[]string{"keygen"}, 0, "", ""},
 		{[]string{"bogus"}, 2, "", "unknown command"},
 		{[]string{"put", "only-key"}, 2, "", "wrong number of arguments"},
 		{nil, 2, "", "usage"},

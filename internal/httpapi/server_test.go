@@ -1,6 +1,7 @@
 package httpapi_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,25 +16,34 @@ import (
 	"github.com/FrancisWorld/raftkv/internal/httpapi"
 	"github.com/FrancisWorld/raftkv/internal/kv"
 	"github.com/FrancisWorld/raftkv/internal/node"
+	"github.com/FrancisWorld/raftkv/internal/peerauth"
 	"github.com/FrancisWorld/raftkv/internal/raft"
 )
 
 type testNode struct {
-	id     uint64
-	url    string
-	node   *node.Node
-	srv    *http.Server
-	cancel context.CancelFunc
+	id         uint64
+	url        string
+	node       *node.Node
+	srv        *http.Server
+	cancel     context.CancelFunc
+	stopTicker context.CancelFunc
 }
+
+var clusterKey = []byte(strings.Repeat("c", 40))
 
 func (n *testNode) stop() {
 	n.cancel()
+	n.stopTicker()
 	_ = n.srv.Close()
 	_ = n.node.Close()
 }
 
 // startCluster runs three real nodes in-process, talking over loopback HTTP.
-func startCluster(t *testing.T) []*testNode {
+func startCluster(t *testing.T) []*testNode { return startClusterAuth(t, clusterKey) }
+
+// startClusterAuth is startCluster with a chosen cluster key; nil disables peer
+// authentication (the --insecure-peer mode).
+func startClusterAuth(t *testing.T, key []byte) []*testNode {
 	t.Helper()
 	const size = 3
 	listeners := make([]net.Listener, size)
@@ -59,7 +69,14 @@ func startCluster(t *testing.T) []*testNode {
 			}
 		}
 		ctx, cancel := context.WithCancel(context.Background())
-		tr := httpapi.NewPeerTransport(others, nil)
+		var auth *peerauth.Authenticator
+		if key != nil {
+			var err error
+			if auth, err = peerauth.New(key, peerauth.Options{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		tr := httpapi.NewPeerTransport(others, auth, nil)
 		store := kv.NewStore()
 		n, err := node.New(node.Config{
 			Raft:    raft.Config{ID: id, Peers: ids, ElectionTick: 10, HeartbeatTick: 1, PreVote: true, CheckQuorum: true, Seed: id},
@@ -69,10 +86,11 @@ func startCluster(t *testing.T) []*testNode {
 			t.Fatal(err)
 		}
 		tr.Start(ctx)
-		go n.RunTicker(ctx, 10*time.Millisecond)
-		srv := &http.Server{Handler: httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, Transport: tr, RequestTimeout: 3 * time.Second}).Handler()}
+		tickCtx, stopTicker := context.WithCancel(ctx)
+		go n.RunTicker(tickCtx, 10*time.Millisecond)
+		srv := &http.Server{Handler: httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, PeerAuth: auth, Transport: tr, RequestTimeout: 3 * time.Second}).Handler()}
 		go func() { _ = srv.Serve(ln) }()
-		nodes = append(nodes, &testNode{id: id, url: peers[id], node: n, srv: srv, cancel: cancel})
+		nodes = append(nodes, &testNode{id: id, url: peers[id], node: n, srv: srv, cancel: cancel, stopTicker: stopTicker})
 	}
 	t.Cleanup(func() {
 		for _, n := range nodes {
@@ -278,14 +296,21 @@ func TestPeerEndpointRejectsGarbage(t *testing.T) {
 	nodes := startCluster(t)
 	n := nodes[0]
 	cases := map[string]string{
-		"not json":       `nope`,
-		"unknown sender": `{"type":4,"from":99,"to":1,"term":1}`,
-		"bad type":       `{"type":77,"from":2,"to":1,"term":1}`,
-		"wrong target":   `{"type":4,"from":2,"to":3,"term":1}`,
+		"not json": `nope`,
 	}
 	for name, body := range cases {
 		if code, out := do(t, "POST", n.url+"/raft/v1/message", nil, body); code != http.StatusBadRequest {
 			t.Errorf("%s: status %d (%s)", name, code, out)
+		}
+	}
+	// Well-formed but unsigned messages are refused before any validation.
+	for name, body := range map[string]string{
+		"unknown sender": `{"type":4,"from":99,"to":1,"term":1}`,
+		"bad type":       `{"type":77,"from":2,"to":1,"term":1}`,
+		"wrong target":   `{"type":4,"from":2,"to":3,"term":1}`,
+	} {
+		if code, out := do(t, "POST", n.url+"/raft/v1/message", nil, body); code != http.StatusUnauthorized {
+			t.Errorf("%s: status %d (%s), want 401", name, code, out)
 		}
 	}
 }
@@ -329,5 +354,145 @@ func TestClientRejectsBadEndpoints(t *testing.T) {
 	}
 	if _, err := client.New([]string{"not a url"}); err == nil {
 		t.Fatal("expected an error for a malformed endpoint")
+	}
+}
+
+// signedPost sends msg to url with valid authentication headers for key.
+func signedPost(t *testing.T, key []byte, url string, m raft.Message, mutateBody func([]byte) []byte) (int, http.Header) {
+	t.Helper()
+	body, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := http.Header{}
+	if key != nil {
+		a, err := peerauth.New(key, peerauth.Options{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Sign(hdr, m, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if mutateBody != nil {
+		body = mutateBody(body)
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url+"/raft/v1/message", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header = hdr
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode, resp.Header
+}
+
+// isolatedLeader elects a leader, freezes it (no more ticks, so it neither
+// heartbeats nor steps down on check-quorum) and kills both followers, leaving
+// a leader that can only learn of a "commit" from forged acknowledgements.
+func isolatedLeader(t *testing.T, key []byte) (*testNode, *node.Future) {
+	t.Helper()
+	nodes := startClusterAuth(t, key)
+	leader := waitLeader(t, nodes)
+	time.Sleep(200 * time.Millisecond) // let the no-op commit everywhere
+	leader.stopTicker()
+	for _, n := range nodes {
+		if n != leader {
+			n.stop()
+		}
+	}
+	fut := leader.node.Propose(kv.Command{ClientID: 5, Seq: 1, Op: kv.OpPut, Key: "forged", Value: "never-stored"}.Encode())
+	return leader, fut
+}
+
+func forgedAck(leader *testNode) raft.Message {
+	st := leader.node.Status()
+	from := leader.id%3 + 1 // some other node
+	return raft.Message{Type: raft.MsgAppResp, From: from, To: leader.id, Term: st.Term, Index: st.LastIndex}
+}
+
+func committed(fut *node.Future, wait time.Duration) bool {
+	select {
+	case <-fut.Done():
+		return true
+	case <-time.After(wait):
+		return false
+	}
+}
+
+// The attack: with two followers dead, a forged acknowledgement "from" a peer
+// is all a leader needs to commit an entry no follower ever stored.
+func TestForgedAcksCommitNothingWhenPeerAuthIsOn(t *testing.T) {
+	leader, fut := isolatedLeader(t, clusterKey)
+	before := leader.node.Status().Commit
+	ack := forgedAck(leader)
+
+	// No headers, a MAC from the wrong key, and a tampered body all fail.
+	if code, _ := signedPost(t, nil, leader.url, ack, nil); code != http.StatusUnauthorized {
+		t.Fatalf("unsigned forgery: %d", code)
+	}
+	if code, _ := signedPost(t, []byte(strings.Repeat("x", 40)), leader.url, ack, nil); code != http.StatusUnauthorized {
+		t.Fatalf("wrong-key forgery: %d", code)
+	}
+	tamper := func(b []byte) []byte {
+		return bytes.Replace(b, []byte(fmt.Sprintf(`"from":%d`, ack.From)), []byte(fmt.Sprintf(`"from":%d`, ack.From%3+1)), 1)
+	}
+	if code, _ := signedPost(t, clusterKey, leader.url, ack, tamper); code != http.StatusUnauthorized {
+		t.Fatalf("tampered forgery: %d", code)
+	}
+	if committed(fut, 400*time.Millisecond) || leader.node.Status().Commit != before {
+		t.Fatal("a forged acknowledgement advanced the commit index")
+	}
+	_, scrape := do(t, "GET", leader.url+"/metrics", nil, "")
+	if !strings.Contains(scrape, `raftkv_peer_auth_failures_total{reason="missing"} 1`) ||
+		!strings.Contains(scrape, `reason="bad_mac"`) {
+		t.Fatalf("auth failures not counted:\n%s", scrape)
+	}
+}
+
+// Control: the same attack against --insecure-peer mode does commit, which is
+// what the authentication closes.
+func TestForgedAcksCommitWithoutPeerAuth(t *testing.T) {
+	leader, fut := isolatedLeader(t, nil)
+	if code, _ := signedPost(t, nil, leader.url, forgedAck(leader), nil); code != http.StatusNoContent {
+		t.Fatalf("forgery status %d", code)
+	}
+	if !committed(fut, 3*time.Second) {
+		t.Fatal("expected the forged ack to commit in insecure mode (control case)")
+	}
+}
+
+func TestPeerMessageReplayAndStaleTimestampAreRejected(t *testing.T) {
+	nodes := startCluster(t)
+	n := nodes[0]
+	a, _ := peerauth.New(clusterKey, peerauth.Options{})
+	m := raft.Message{Type: raft.MsgHeartbeatResp, From: 2, To: n.id, Term: 0}
+	body, _ := json.Marshal(m)
+	post := func(h http.Header) int {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, n.url+"/raft/v1/message", bytes.NewReader(body))
+		req.Header = h
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	h := http.Header{}
+	_ = a.Sign(h, m, body)
+	if code := post(h); code != http.StatusNoContent {
+		t.Fatalf("first delivery: %d", code)
+	}
+	if code := post(h); code != http.StatusUnauthorized {
+		t.Fatalf("replay: %d", code)
+	}
+	old, _ := peerauth.New(clusterKey, peerauth.Options{Now: func() time.Time { return time.Now().Add(-5 * time.Minute) }})
+	h2 := http.Header{}
+	_ = old.Sign(h2, m, body)
+	if code := post(h2); code != http.StatusUnauthorized {
+		t.Fatalf("stale timestamp: %d", code)
 	}
 }

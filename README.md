@@ -49,8 +49,10 @@ Requires Go (see `go.mod`). Everything below was run for this README.
 ```sh
 go build -o bin/ ./cmd/...
 
+./bin/raftctl keygen > cluster.key       # a shared key authenticates peer traffic (see Security)
 P="1=http://127.0.0.1:18081,2=http://127.0.0.1:18082,3=http://127.0.0.1:18083"
-for i in 1 2 3; do ./bin/raftkv --id $i --listen 127.0.0.1:1808$i --peers $P --data-dir ./data & done
+for i in 1 2 3; do ./bin/raftkv --id $i --listen 127.0.0.1:1808$i --peers $P --cluster-key-file cluster.key --data-dir ./data & done
+# or simply: ./scripts/dev-cluster.sh   (throwaway key, cleans up on Ctrl-C)
 
 export EP=http://127.0.0.1:18081,http://127.0.0.1:18082,http://127.0.0.1:18083
 ./bin/raftctl --endpoints $EP status
@@ -76,7 +78,7 @@ not applied (current value: "world")
 
 I also stopped the leader (SIGTERM), wrote 120 more keys through the survivors, restarted it, and it came back as a follower and installed a snapshot from the new leader (`installed snapshot index=100` in its log) and served the latest key.
 
-With Docker: `docker compose up --build -d` starts three non-root containers on ports 8081-8083 (I ran the same file on other host ports: healthchecks went green, leader redirects worked from the host, and the cluster survived stopping and restarting the leader container). `--client-urls` tells nodes which URLs to give clients when redirecting.
+With Docker: `scripts/compose-up.sh` (generates a throwaway cluster key per run, then `docker compose up --build -d`) starts three non-root containers on ports 8081-8083 (I ran the same file on other host ports: healthchecks went green, leader redirects worked from the host, and the cluster survived stopping and restarting the leader container). `--client-urls` tells nodes which URLs to give clients when redirecting.
 
 ### HTTP API
 
@@ -89,6 +91,13 @@ With Docker: `docker compose up --build -d` starts three non-root containers on 
 | `GET /v1/status`, `/healthz`, `/readyz`, `/metrics` | Operations. |
 
 Writes accept `Raftkv-Client-Id` and `Raftkv-Seq` headers. A retry that reuses both is executed at most once and gets the original result back (`"duplicate":true`). Followers answer `307` with the leader's URL; the Go client and `raftctl` follow it and retry transient `503`/`504` with the same sequence number.
+
+## Security
+
+- **Peer traffic is authenticated.** Every Raft message POSTed to `/raft/v1/message` carries an HMAC-SHA256 over sender, receiver, term, type, a hash of the body, a timestamp and a random nonce, keyed by a shared cluster key (`--cluster-key-file` or `RAFTKV_CLUSTER_KEY`, at least 32 characters; `raftctl keygen` makes one). The receiver verifies in constant time, accepts timestamps within +/-30 s, and keeps a bounded replay cache (it fails closed when full). Without this, anyone who could reach the port could forge acknowledgements and make a leader commit entries no follower stored.
+- **A node refuses to start without a key** unless `--insecure-peer` is given, which logs a loud warning and is for local development only. No key is committed anywhere: `scripts/compose-up.sh` and `scripts/dev-cluster.sh` generate a throwaway one per run.
+- Tests: forged sender/term/type/target, tampered body, wrong key, missing headers, replay, stale and future timestamps, cache bounds (`internal/peerauth`), and an end-to-end test where two followers are dead and a forged ack is posted to the real leader: it commits nothing with authentication on, and does commit in `--insecure-peer` mode as a control (`TestForgedAcksCommitNothingWhenPeerAuthIsOn`, `TestForgedAcksCommitWithoutPeerAuth`).
+- The client API (`/v1/*`) is still unauthenticated and unencrypted.
 
 ## What is hard, and how it is handled
 
@@ -130,7 +139,7 @@ A typical chaos seed completes roughly 3,000 client operations (measured on an A
 ## Limitations
 
 - **Static membership**: the peer set is fixed at startup; no joint consensus or learners.
-- **No leadership transfer**, no client-session expiry (the session table grows with the number of distinct clients), no TLS or authentication on the client or peer endpoints.
+- **No leadership transfer**, no client-session expiry (the session table grows with the number of distinct clients), no TLS anywhere and no authentication on the client API. Peer authentication uses one shared key, so a compromised node (or anyone holding the key) can impersonate any peer; per-node keys or mTLS would fix that.
 - InstallSnapshot sends the snapshot in **one message** (no chunking); large states mean large requests.
 - Values are UTF-8 strings in JSON; the store is an in-memory map, so the data set must fit in RAM.
 - Linearizability is checked on simulated histories; I have not run Jepsen-style tests against real processes and make no performance claims.

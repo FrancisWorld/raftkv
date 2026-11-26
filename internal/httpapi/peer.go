@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/FrancisWorld/raftkv/internal/peerauth"
 	"github.com/FrancisWorld/raftkv/internal/raft"
 )
 
@@ -26,6 +27,7 @@ const (
 // Raft tolerates by design.
 type PeerTransport struct {
 	log    *slog.Logger
+	auth   *peerauth.Authenticator
 	client *http.Client
 	queues map[uint64]*peerQueue
 
@@ -41,13 +43,15 @@ type peerQueue struct {
 }
 
 // NewPeerTransport prepares queues for the given peers (id -> base URL, self
-// excluded). Call Start to begin sending.
-func NewPeerTransport(peers map[uint64]string, log *slog.Logger) *PeerTransport {
+// excluded). If auth is non-nil every message is signed. Call Start to begin
+// sending.
+func NewPeerTransport(peers map[uint64]string, auth *peerauth.Authenticator, log *slog.Logger) *PeerTransport {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
 	t := &PeerTransport{
 		log:    log,
+		auth:   auth,
 		client: &http.Client{Timeout: peerTimeout},
 		queues: make(map[uint64]*peerQueue, len(peers)),
 	}
@@ -108,6 +112,11 @@ func (t *PeerTransport) post(ctx context.Context, url string, m raft.Message) er
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if t.auth != nil {
+		if err := t.auth.Sign(req.Header, m, body); err != nil {
+			return err
+		}
+	}
 	resp, err := t.client.Do(req)
 	if err != nil {
 		return err

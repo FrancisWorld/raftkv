@@ -49,8 +49,10 @@ Requer Go (veja `go.mod`). Tudo abaixo foi executado para este README.
 ```sh
 go build -o bin/ ./cmd/...
 
+./bin/raftctl keygen > cluster.key       # uma chave compartilhada autentica o tráfego entre nós (veja Segurança)
 P="1=http://127.0.0.1:18081,2=http://127.0.0.1:18082,3=http://127.0.0.1:18083"
-for i in 1 2 3; do ./bin/raftkv --id $i --listen 127.0.0.1:1808$i --peers $P --data-dir ./data & done
+for i in 1 2 3; do ./bin/raftkv --id $i --listen 127.0.0.1:1808$i --peers $P --cluster-key-file cluster.key --data-dir ./data & done
+# ou simplesmente: ./scripts/dev-cluster.sh   (chave descartável, limpa ao dar Ctrl-C)
 
 export EP=http://127.0.0.1:18081,http://127.0.0.1:18082,http://127.0.0.1:18083
 ./bin/raftctl --endpoints $EP status
@@ -76,7 +78,7 @@ not applied (current value: "world")
 
 Também parei o líder (SIGTERM), gravei mais 120 chaves pelos sobreviventes e reiniciei o nó: ele voltou como seguidor, instalou um snapshot do novo líder (`installed snapshot index=100` no log) e serviu a última chave.
 
-Com Docker: `docker compose up --build -d` sobe três contêineres non-root nas portas 8081-8083 (rodei o mesmo arquivo em outras portas do host: healthchecks saudáveis, redirecionamentos ao líder funcionando a partir do host e o cluster sobreviveu a parar e reiniciar o contêiner do líder). `--client-urls` define as URLs que os nós entregam aos clientes ao redirecionar.
+Com Docker: `scripts/compose-up.sh` (gera uma chave de cluster descartável a cada execução e roda `docker compose up --build -d`) sobe três contêineres non-root nas portas 8081-8083 (rodei o mesmo arquivo em outras portas do host: healthchecks saudáveis, redirecionamentos ao líder funcionando a partir do host e o cluster sobreviveu a parar e reiniciar o contêiner do líder). `--client-urls` define as URLs que os nós entregam aos clientes ao redirecionar.
 
 ### API HTTP
 
@@ -89,6 +91,13 @@ Com Docker: `docker compose up --build -d` sobe três contêineres non-root nas 
 | `GET /v1/status`, `/healthz`, `/readyz`, `/metrics` | Operação. |
 
 Escritas aceitam os cabeçalhos `Raftkv-Client-Id` e `Raftkv-Seq`. Uma repetição com os mesmos valores executa no máximo uma vez e devolve o resultado original (`"duplicate":true`). Seguidores respondem `307` com a URL do líder; o cliente Go e o `raftctl` seguem o redirecionamento e repetem `503`/`504` transitórios com o mesmo número de sequência.
+
+## Segurança
+
+- **O tráfego entre nós é autenticado.** Toda mensagem Raft enviada a `/raft/v1/message` leva um HMAC-SHA256 sobre remetente, destinatário, termo, tipo, hash do corpo, timestamp e nonce aleatório, com uma chave de cluster compartilhada (`--cluster-key-file` ou `RAFTKV_CLUSTER_KEY`, mínimo de 32 caracteres; `raftctl keygen` gera uma). O receptor verifica em tempo constante, aceita timestamps em +/-30 s e mantém um cache de replay limitado (falha fechada quando cheio). Sem isso, qualquer um com acesso à porta poderia forjar confirmações e fazer o líder commitar entradas que nenhum seguidor gravou.
+- **Um nó se recusa a iniciar sem chave**, a menos que `--insecure-peer` seja informado, o que gera um aviso em destaque e serve só para desenvolvimento local. Nenhuma chave é versionada: `scripts/compose-up.sh` e `scripts/dev-cluster.sh` geram uma descartável a cada execução.
+- Testes: remetente/termo/tipo/destino forjados, corpo adulterado, chave errada, cabeçalhos ausentes, replay, timestamps antigos e futuros, limites do cache (`internal/peerauth`) e um teste de ponta a ponta em que dois seguidores estão mortos e uma confirmação forjada é enviada ao líder real: nada é commitado com autenticação ligada, e é commitado em modo `--insecure-peer` como controle (`TestForgedAcksCommitNothingWhenPeerAuthIsOn`, `TestForgedAcksCommitWithoutPeerAuth`).
+- A API de clientes (`/v1/*`) continua sem autenticação e sem criptografia.
 
 ## O que é difícil e como foi tratado
 
@@ -130,7 +139,7 @@ Uma semente típica de caos completa cerca de 3.000 operações de cliente (medi
 ## Limitações
 
 - **Membros estáticos**: o conjunto de pares é fixo na partida; sem joint consensus nem learners.
-- **Sem transferência de liderança**, sem expiração de sessões (a tabela cresce com o número de clientes distintos), sem TLS ou autenticação.
+- **Sem transferência de liderança**, sem expiração de sessões (a tabela cresce com o número de clientes distintos), sem TLS em lugar nenhum e sem autenticação na API de clientes. A autenticação entre nós usa uma única chave compartilhada, então um nó comprometido (ou quem tiver a chave) pode se passar por qualquer par; chaves por nó ou mTLS resolveriam isso.
 - O InstallSnapshot envia o snapshot **em uma única mensagem** (sem fragmentação).
 - Valores são strings UTF-8 em JSON; o dado precisa caber em RAM.
 - A linearizabilidade é verificada em históricos simulados; não rodei testes estilo Jepsen em processos reais e não faço afirmações de desempenho.

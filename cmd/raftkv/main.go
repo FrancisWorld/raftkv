@@ -20,15 +20,20 @@ import (
 	"github.com/FrancisWorld/raftkv/internal/httpapi"
 	"github.com/FrancisWorld/raftkv/internal/kv"
 	"github.com/FrancisWorld/raftkv/internal/node"
+	"github.com/FrancisWorld/raftkv/internal/peerauth"
 	"github.com/FrancisWorld/raftkv/internal/raft"
 	"github.com/FrancisWorld/raftkv/internal/wal"
 )
+
+const keyEnv = "RAFTKV_CLUSTER_KEY"
 
 type options struct {
 	id                uint64
 	listen            string
 	peers             string
 	clientURLs        string
+	clusterKeyFile    string
+	insecurePeer      bool
 	dataDir           string
 	tick              time.Duration
 	electionTicks     int
@@ -52,6 +57,8 @@ func parseFlags(args []string) (options, error) {
 	fs.StringVar(&o.listen, "listen", ":8080", "address to listen on for clients and peers")
 	fs.StringVar(&o.peers, "peers", "", "cluster members as id=url pairs, e.g. 1=http://n1:8080,2=http://n2:8080,3=http://n3:8080")
 	fs.StringVar(&o.clientURLs, "client-urls", "", "id=url pairs clients use to reach each node, if different from --peers (used for leader redirects)")
+	fs.StringVar(&o.clusterKeyFile, "cluster-key-file", "", "file holding the shared cluster key that authenticates peer traffic (or set "+keyEnv+")")
+	fs.BoolVar(&o.insecurePeer, "insecure-peer", false, "DEVELOPMENT ONLY: accept unauthenticated peer messages")
 	fs.StringVar(&o.dataDir, "data-dir", "./data", "directory for the write-ahead log and snapshots")
 	fs.DurationVar(&o.tick, "tick", 100*time.Millisecond, "length of one Raft tick")
 	fs.IntVar(&o.electionTicks, "election-ticks", 10, "base election timeout in ticks (randomised to 1x-2x)")
@@ -107,6 +114,20 @@ func newLogger(level string) (*slog.Logger, error) {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: l})), nil
 }
 
+// peerAuthenticator builds the peer-traffic authenticator. Starting without a
+// key is refused unless --insecure-peer is given, which is logged loudly.
+func peerAuthenticator(o options, log *slog.Logger) (*peerauth.Authenticator, error) {
+	if o.insecurePeer {
+		log.Warn("SECURITY: --insecure-peer is set; anyone who can reach this port can forge Raft messages, commit arbitrary entries and depose leaders. Never use outside local development.")
+		return nil, nil
+	}
+	key, err := peerauth.LoadKey(o.clusterKeyFile, keyEnv)
+	if err != nil {
+		return nil, fmt.Errorf("%w (use --insecure-peer only for local development)", err)
+	}
+	return peerauth.New(key, peerauth.Options{})
+}
+
 func run(args []string) error {
 	o, err := parseFlags(args)
 	if err != nil {
@@ -130,6 +151,11 @@ func run(args []string) error {
 		return err
 	}
 
+	auth, err := peerAuthenticator(o, log)
+	if err != nil {
+		return err
+	}
+
 	ids := make([]uint64, 0, len(peers))
 	others := map[uint64]string{}
 	for id, u := range peers {
@@ -147,7 +173,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	transport := httpapi.NewPeerTransport(others, log)
+	transport := httpapi.NewPeerTransport(others, auth, log)
 	store := kv.NewStore()
 	n, err := node.New(node.Config{
 		Raft: raft.Config{
@@ -164,7 +190,7 @@ func run(args []string) error {
 
 	srv := &http.Server{
 		Addr:              o.listen,
-		Handler:           httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, ClientURLs: clientURLs, Transport: transport, RequestTimeout: o.requestTimeout, Logger: log}).Handler(),
+		Handler:           httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, ClientURLs: clientURLs, PeerAuth: auth, Transport: transport, RequestTimeout: o.requestTimeout, Logger: log}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	transport.Start(ctx)

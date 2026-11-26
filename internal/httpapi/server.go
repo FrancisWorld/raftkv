@@ -17,6 +17,7 @@ import (
 	"github.com/FrancisWorld/raftkv/internal/kv"
 	"github.com/FrancisWorld/raftkv/internal/metrics"
 	"github.com/FrancisWorld/raftkv/internal/node"
+	"github.com/FrancisWorld/raftkv/internal/peerauth"
 	"github.com/FrancisWorld/raftkv/internal/raft"
 )
 
@@ -37,8 +38,13 @@ type Config struct {
 	Node  *node.Node
 	Store *kv.Store
 	// Peers maps every node id (self included) to the base URL peers use to
-	// reach it; it also authenticates the sender of peer messages.
+	// reach it. It only validates that a message names a known node; it proves
+	// nothing about the caller, which is what PeerAuth is for.
 	Peers map[uint64]string
+	// PeerAuth authenticates /raft/v1/message requests. When nil the endpoint
+	// accepts unauthenticated messages, which is only safe on a trusted network
+	// (the --insecure-peer development mode).
+	PeerAuth *peerauth.Authenticator
 	// ClientURLs maps node ids to the base URL clients use, which can differ from
 	// the peer URL (for example behind Docker networking). Leader redirects use
 	// it. When nil, Peers is used.
@@ -56,6 +62,7 @@ type Server struct {
 	reg      *metrics.Registry
 	requests *metrics.CounterVec
 	latency  *metrics.Histogram
+	authFail *metrics.CounterVec
 }
 
 // New builds a Server and registers its metrics.
@@ -73,6 +80,7 @@ func New(cfg Config) *Server {
 	s.requests = s.reg.NewCounterVec("raftkv_http_requests_total", "Client API requests by route and status code.", "route", "code")
 	s.latency = s.reg.NewHistogram("raftkv_request_duration_seconds", "Time to serve client key-value requests.",
 		[]float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5})
+	s.authFail = s.reg.NewCounterVec("raftkv_peer_auth_failures_total", "Rejected peer messages by reason.", "reason")
 	s.registerNodeMetrics()
 	return s
 }
@@ -353,10 +361,23 @@ func (s *Server) handleReady(w http.ResponseWriter, _ *http.Request) {
 // ---- peer endpoint ----
 
 func (s *Server) handlePeer(w http.ResponseWriter, r *http.Request) {
-	var m raft.Message
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPeerBody)).Decode(&m); err != nil {
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxPeerBody))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_message", err.Error())
 		return
+	}
+	var m raft.Message
+	if err := json.Unmarshal(body, &m); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_message", err.Error())
+		return
+	}
+	if s.cfg.PeerAuth != nil {
+		if err := s.cfg.PeerAuth.Verify(r.Header, m, body); err != nil {
+			s.authFail.With(authReason(err)).Inc()
+			s.log.Warn("rejected peer message", "reason", authReason(err), "remote", r.RemoteAddr)
+			writeError(w, http.StatusUnauthorized, "unauthorized", "peer authentication failed")
+			return
+		}
 	}
 	if _, known := s.cfg.Peers[m.From]; !known || m.From == m.To || !m.Type.Valid() {
 		writeError(w, http.StatusBadRequest, "invalid_message", "unknown sender, receiver or type")
@@ -368,4 +389,18 @@ func (s *Server) handlePeer(w http.ResponseWriter, r *http.Request) {
 	}
 	s.cfg.Node.Receive(m)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func authReason(err error) string {
+	switch {
+	case errors.Is(err, peerauth.ErrMissing):
+		return "missing"
+	case errors.Is(err, peerauth.ErrBadMAC):
+		return "bad_mac"
+	case errors.Is(err, peerauth.ErrStale):
+		return "stale"
+	case errors.Is(err, peerauth.ErrReplay):
+		return "replay"
+	}
+	return "other"
 }
