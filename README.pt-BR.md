@@ -76,7 +76,7 @@ not applied (current value: "world")
 
 Também parei o líder (SIGTERM), gravei mais 120 chaves pelos sobreviventes e reiniciei o nó: ele voltou como seguidor, instalou um snapshot do novo líder (`installed snapshot index=100` no log) e serviu a última chave.
 
-Com Docker: `docker compose up --build -d` sobe três nós nas portas 8081-8083.
+Com Docker: `docker compose up --build -d` sobe três contêineres non-root nas portas 8081-8083 (rodei o mesmo arquivo em outras portas do host: healthchecks saudáveis, redirecionamentos ao líder funcionando a partir do host e o cluster sobreviveu a parar e reiniciar o contêiner do líder). `--client-urls` define as URLs que os nós entregam aos clientes ao redirecionar.
 
 ### API HTTP
 

@@ -76,7 +76,7 @@ not applied (current value: "world")
 
 I also stopped the leader (SIGTERM), wrote 120 more keys through the survivors, restarted it, and it came back as a follower and installed a snapshot from the new leader (`installed snapshot index=100` in its log) and served the latest key.
 
-With Docker: `docker compose up --build -d` starts three nodes on ports 8081-8083.
+With Docker: `docker compose up --build -d` starts three non-root containers on ports 8081-8083 (I ran the same file on other host ports: healthchecks went green, leader redirects worked from the host, and the cluster survived stopping and restarting the leader container). `--client-urls` tells nodes which URLs to give clients when redirecting.
 
 ### HTTP API
 
