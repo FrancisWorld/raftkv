@@ -36,9 +36,13 @@ const maxPeerBody = 512 << 20
 type Config struct {
 	Node  *node.Node
 	Store *kv.Store
-	// Peers maps every node id (self included) to the base URL clients and
-	// peers use to reach it. It is used to redirect clients to the leader.
+	// Peers maps every node id (self included) to the base URL peers use to
+	// reach it; it also authenticates the sender of peer messages.
 	Peers map[uint64]string
+	// ClientURLs maps node ids to the base URL clients use, which can differ from
+	// the peer URL (for example behind Docker networking). Leader redirects use
+	// it. When nil, Peers is used.
+	ClientURLs map[uint64]string
 	// RequestTimeout bounds how long a request waits for consensus.
 	RequestTimeout time.Duration
 	Transport      *PeerTransport
@@ -61,6 +65,9 @@ func New(cfg Config) *Server {
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.New(slog.DiscardHandler)
+	}
+	if cfg.ClientURLs == nil {
+		cfg.ClientURLs = cfg.Peers
 	}
 	s := &Server{cfg: cfg, log: cfg.Logger, reg: metrics.NewRegistry()}
 	s.requests = s.reg.NewCounterVec("raftkv_http_requests_total", "Client API requests by route and status code.", "route", "code")
@@ -277,7 +284,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var nl *node.NotLeaderError
 	switch {
 	case errors.As(err, &nl):
-		if base, ok := s.cfg.Peers[nl.Leader]; ok && nl.Leader != 0 {
+		if base, ok := s.cfg.ClientURLs[nl.Leader]; ok && nl.Leader != 0 {
 			w.Header().Set(HeaderLeader, strconv.FormatUint(nl.Leader, 10))
 			w.Header().Set("Location", base+r.URL.RequestURI())
 			writeError(w, http.StatusTemporaryRedirect, "not_leader", "redirecting to the leader")
@@ -319,7 +326,7 @@ type statusResponse struct {
 func (s *Server) handleStatus(w http.ResponseWriter, _ *http.Request) {
 	st := s.cfg.Node.Status()
 	writeJSON(w, http.StatusOK, statusResponse{
-		ID: st.ID, Role: st.Role.String(), Term: st.Term, Leader: st.Leader, LeaderURL: s.cfg.Peers[st.Leader],
+		ID: st.ID, Role: st.Role.String(), Term: st.Term, Leader: st.Leader, LeaderURL: s.cfg.ClientURLs[st.Leader],
 		CommitIndex: st.Commit, AppliedIndex: st.Applied, LastIndex: st.LastIndex, SnapshotIndex: st.SnapshotIndex,
 		Keys: s.cfg.Store.Len(),
 	})

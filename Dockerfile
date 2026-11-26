@@ -4,10 +4,11 @@ WORKDIR /src
 COPY go.mod ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/...
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/ ./cmd/... && mkdir /out/data
 
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/raftkv /out/raftctl /usr/local/bin/
+COPY --from=build --chown=nonroot:nonroot /out/data /data
 USER nonroot:nonroot
 VOLUME /data
 EXPOSE 8080

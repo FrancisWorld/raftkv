@@ -28,6 +28,7 @@ type options struct {
 	id                uint64
 	listen            string
 	peers             string
+	clientURLs        string
 	dataDir           string
 	tick              time.Duration
 	electionTicks     int
@@ -50,6 +51,7 @@ func parseFlags(args []string) (options, error) {
 	fs.Uint64Var(&o.id, "id", 0, "this node's id (must appear in --peers)")
 	fs.StringVar(&o.listen, "listen", ":8080", "address to listen on for clients and peers")
 	fs.StringVar(&o.peers, "peers", "", "cluster members as id=url pairs, e.g. 1=http://n1:8080,2=http://n2:8080,3=http://n3:8080")
+	fs.StringVar(&o.clientURLs, "client-urls", "", "id=url pairs clients use to reach each node, if different from --peers (used for leader redirects)")
 	fs.StringVar(&o.dataDir, "data-dir", "./data", "directory for the write-ahead log and snapshots")
 	fs.DurationVar(&o.tick, "tick", 100*time.Millisecond, "length of one Raft tick")
 	fs.IntVar(&o.electionTicks, "election-ticks", 10, "base election timeout in ticks (randomised to 1x-2x)")
@@ -71,6 +73,13 @@ func parseFlags(args []string) (options, error) {
 
 // parsePeers parses "1=http://a:1,2=http://b:2" into a map of trimmed base URLs.
 func parsePeers(s string) (map[uint64]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, errors.New("a peer list is required")
+	}
+	return parseURLMap(s)
+}
+
+func parseURLMap(s string) (map[uint64]string, error) {
 	peers := map[uint64]string{}
 	for _, part := range strings.Split(s, ",") {
 		part = strings.TrimSpace(part)
@@ -86,9 +95,6 @@ func parsePeers(s string) (map[uint64]string, error) {
 			return nil, fmt.Errorf("duplicate peer id %d", id)
 		}
 		peers[id] = strings.TrimRight(url, "/")
-	}
-	if len(peers) == 0 {
-		return nil, errors.New("--peers is required")
 	}
 	return peers, nil
 }
@@ -112,6 +118,12 @@ func run(args []string) error {
 	}
 	if _, ok := peers[o.id]; !ok {
 		return fmt.Errorf("--id %d is not listed in --peers", o.id)
+	}
+	var clientURLs map[uint64]string
+	if o.clientURLs != "" {
+		if clientURLs, err = parseURLMap(o.clientURLs); err != nil {
+			return fmt.Errorf("--client-urls: %w", err)
+		}
 	}
 	log, err := newLogger(o.logLevel)
 	if err != nil {
@@ -152,7 +164,7 @@ func run(args []string) error {
 
 	srv := &http.Server{
 		Addr:              o.listen,
-		Handler:           httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, Transport: transport, RequestTimeout: o.requestTimeout, Logger: log}).Handler(),
+		Handler:           httpapi.New(httpapi.Config{Node: n, Store: store, Peers: peers, ClientURLs: clientURLs, Transport: transport, RequestTimeout: o.requestTimeout, Logger: log}).Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	transport.Start(ctx)
